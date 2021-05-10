@@ -52,6 +52,8 @@ public class BufferPool {
 		// some code goes here
 		this.numPages = numPages;
 		this.keyHolder = new KeyHolder();
+		
+		lockManager = new LockManager();
 	}
 
 	public static int getPageSize() {
@@ -84,16 +86,51 @@ public class BufferPool {
 	 * @param perm the requested permissions on the page
 	 * @throws InterruptedException
 	 */
+	
+	//锁管理器
+    private final LockManager lockManager;
 	public Page getPage(TransactionId tid, PageId pid, Permissions perm)
 			throws TransactionAbortedException, DbException {
 		// some code goes here
 		// block and acquire desired lock before returning a page
+		/*if (perm == S) System.out.println(tid + " tries to Slock on page " + pid);
+		if (perm == X) System.out.println(tid + " tries to Xlock on page " + pid);
+		 
 		try {
+			keyHolder.dpGraph.put(tid, pid);
 			keyHolder.lock(tid, pid, perm);
 		} catch (InterruptedException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
+		
+		if (perm == S) System.out.println(tid + " Slocks on page " + pid);
+		if (perm == X) System.out.println(tid + " Xlocks on page " + pid);
+		*/
+		//edit
+		// some code goes here
+        boolean result = (perm == Permissions.READ_ONLY) ? lockManager.grantSLock(tid, pid)
+                : lockManager.grantXLock(tid, pid);
+        //下面的while循环就是在模拟等待过程，隔一段时间就检查一次是否申请到锁了，还没申请到就检查是否陷入死锁
+        while (!result) {
+            if (lockManager.deadlockOccurred(tid, pid)) {
+            	System.out.println();
+            	System.out.println("DEADLOCK OCCURED");
+            	System.out.println();
+                throw new TransactionAbortedException();
+            }
+            try {
+				Thread.sleep(500);
+			} catch (InterruptedException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+            //sleep之后再次判断result
+            result = (perm == Permissions.READ_ONLY) ? lockManager.grantSLock(tid, pid)
+                    : lockManager.grantXLock(tid, pid);
+        }
+		//done edit
+		
 		Page p = pages.get(pid);
 		// not in the buffer
 		if (p == null) {

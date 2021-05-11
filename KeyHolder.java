@@ -1,12 +1,15 @@
 package simpledb;
+
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.*;
-
 
 /**
  * Keyholder manages which transactions gets access to a S or X lock
  */
 public class KeyHolder {
+	Permissions S = Permissions.READ_ONLY;
+	Permissions X = Permissions.READ_WRITE;
+
 	/*
 	 * A help class that stores information of lock holder and permission
 	 */
@@ -18,44 +21,58 @@ public class KeyHolder {
 			this.tid = t;
 			this.perm = perm;
 		}
-		
+
 		public String toString() {
-			return this.tid.toString();
+			String permission;
+			if (this.perm == Permissions.READ_ONLY)
+				permission = "S";
+			else
+				permission = "X";
+			return "tid=" + this.tid.toString() + " permission=" + permission;
 		}
 	}
-	
-	private static class NodeInfo {		
+
+	private static class NodeInfo {
 		int color;
 		TransactionId tid;
 		TransactionId parent;
 		int d;
 		int f;
-		
+
 		NodeInfo(TransactionId tid) {
 			this.color = 0;
 			this.tid = tid;
 		}
-		
+
 		public String toString() {
-			return "tid="+tid+" parent="+parent+" color="+color+" d="+d+" f="+f;
+			return "tid=" + tid + " parent=" + parent + " color=" + color + " d=" + d + " f=" + f;
 		}
 	}
 
 	// stores information the transactions that are accessing each page
 	// -> page pid is locked by which locks
-	private ConcurrentHashMap<PageId, ArrayList<Locks>> locking;
+	public ConcurrentHashMap<PageId, ArrayList<Locks>> locking;
 	// a waiting table
 	public ConcurrentHashMap<TransactionId, PageId> dpGraph;
 	// graph information
 	private ConcurrentHashMap<TransactionId, NodeInfo> graphInfo;
 
-	Permissions S = Permissions.READ_ONLY;
-	Permissions X = Permissions.READ_WRITE;
-
 	public KeyHolder() {
 		this.locking = new ConcurrentHashMap<>();
 		this.dpGraph = new ConcurrentHashMap<>();
 		this.graphInfo = new ConcurrentHashMap<>();
+	}
+
+	public void removeLocksBy(TransactionId tid) {
+		for (Map.Entry<PageId, ArrayList<Locks>> e : locking.entrySet()) {
+			ArrayList<Locks> locks = e.getValue();
+			for (Locks l : locks) {
+				if (l.tid.equals(tid)) {
+					unlock(tid, e.getKey());
+					break;
+				}
+			}
+		}
 	}
 
 	/**
@@ -66,16 +83,19 @@ public class KeyHolder {
 	 * @param perm
 	 * @return
 	 * @throws InterruptedException
-	 * @throws TransactionAbortedException 
+	 * @throws TransactionAbortedException
 	 */
-	public synchronized boolean lock(TransactionId tid, PageId pid, Permissions perm) throws InterruptedException, TransactionAbortedException {
-		//System.out.println("Try to lock on Tramsaction#" + tid + " page " + pid);
-		//dpGraph.put(tid, pid);
+	public synchronized boolean lock(TransactionId tid, PageId pid, Permissions perm)
+			throws InterruptedException, TransactionAbortedException {
+		// System.out.println("Try to lock on Tramsaction#" + tid + " page " + pid);
+		// dpGraph.put(tid, pid);
 		boolean locked = (perm == S) ? SLock(tid, pid) : XLock(tid, pid);
-		//dpGraph.put(tid, pid);
+		// dpGraph.put(tid, pid);
 		while (!locked) {
 			// deadlock check
-			handleDeadlock(tid, pid);
+			if (handleDeadlock(tid, pid)) {
+				throw new TransactionAbortedException();
+			}
 			// wait for a while
 			Thread.sleep(500);
 			// try to lock again
@@ -106,7 +126,7 @@ public class KeyHolder {
 			}
 		}
 		return false;
-		
+
 	}
 
 	/**
@@ -117,7 +137,7 @@ public class KeyHolder {
 	 * @return true if granted
 	 */
 	public synchronized boolean SLock(TransactionId tid, PageId pid) {
-		//System.out.println("SLock on " + tid + " page " + pid);
+		// System.out.println("SLock on " + tid + " page " + pid);
 		ArrayList<Locks> lockedBy = locking.get(pid);
 		if (lockedBy != null && lockedBy.size() > 0) {
 			// single transaction locking
@@ -130,7 +150,7 @@ public class KeyHolder {
 					if (l.perm == S)
 						return lockHelper(pid, tid, S);
 					else {
-						dpGraph.put(tid, pid);						
+						dpGraph.put(tid, pid);
 						return false;
 					}
 				}
@@ -165,7 +185,7 @@ public class KeyHolder {
 	 * @return
 	 */
 	public synchronized boolean XLock(TransactionId tid, PageId pid) {
-		//System.out.println("XLock on " + tid + " page " + pid);
+		// System.out.println("XLock on " + tid + " page " + pid);
 		ArrayList<Locks> lockedBy = locking.get(pid);
 		if (lockedBy != null && lockedBy.size() > 0) {
 			// only one or two locks -> mine or not mine
@@ -175,7 +195,7 @@ public class KeyHolder {
 				if (l.tid.equals(tid)) {
 					return (l.perm == X) ? true : lockHelper(pid, tid, X);
 				} else {
-					//!!!
+					// !!!
 					dpGraph.put(tid, pid);
 					return false;
 				}
@@ -211,7 +231,7 @@ public class KeyHolder {
 		lockedBy.add(mylock);
 		locking.put(pid, lockedBy);
 		dpGraph.remove(tid);
-		//System.out.println("Grant Transaction #" + tid + " lock on " + pid);
+		// System.out.println("Grant Transaction #" + tid + " lock on " + pid);
 		return true;
 	}
 
@@ -232,7 +252,6 @@ public class KeyHolder {
 		}
 		return false;
 	}
-	
 
 	/**
 	 * detects deadlock
@@ -240,123 +259,116 @@ public class KeyHolder {
 	 * @param tid
 	 * @param pid
 	 * @return
-	 * @throws TransactionAbortedException 
+	 * @throws TransactionAbortedException
 	 */
-	public synchronized void handleDeadlock(TransactionId tid, PageId pid) throws TransactionAbortedException {
+	public synchronized boolean handleDeadlock(TransactionId tid, PageId pid) throws TransactionAbortedException {
 		ArrayList<Locks> lockedBy = locking.get(pid);
-		
+
 		// no transaction occupying the lock on pid
-		if (lockedBy == null || lockedBy.size() == 0) return;
-		
+		if (lockedBy == null || lockedBy.size() == 0)
+			return false;
+
 		// check each transaction t is waiting for
 		HashSet<TransactionId> cause = detectCycle();
-		
+
 		System.out.println();
 		System.out.println("dpGraph: " + dpGraph);
 		System.out.println(tid + " waiting for: " + lockedBy + " caused by: " + cause);
 		System.out.println();
-		
+
+		// if (cause != null && cause.contains(tid)) {
 		if (cause != null && cause.contains(tid)) {
-			throw new TransactionAbortedException();
-		}
-	}
-	/*public synchronized boolean handleDeadlock(TransactionId tid, PageId pid) throws TransactionAbortedException {
-		ArrayList<Locks> lockedBy = locking.get(pid);
-		
-		// no transaction occupying the lock on pid
-		if (lockedBy == null || lockedBy.size() == 0) return false;
-		
-		// check each transaction t is waiting for
-		TransactionId cause = detectCycle();
-		
-		System.out.println("dpGraph: " + dpGraph);
-		System.out.println(tid + " waiting for: " + lockedBy + " caused by: " + cause);
-		
-		if (cause != null) {
-			//throw new TransactionAbortedException();
+			dpGraph.remove(tid);
+			//removeLocksBy(tid);
 			return true;
 		}
-		
+
 		return false;
-	}*/
-	
+	}
+
 	final int WHITE = 0;
 	final int GRAY = 1;
 	final int BLACK = 2;
 	int t;
-	
+
 	synchronized void recDFS(TransactionId tid) {
 		NodeInfo info = graphInfo.get(tid);
-		
+
 		if (info == null) {
 			info = new NodeInfo(tid);
 			graphInfo.put(tid, info);
 		}
 		info.color = GRAY;
 		info.d = ++t;
-		
+
 		PageId page = dpGraph.get(tid);
-		if (page == null) return; //!!!
-		
+		if (page == null)
+			return; // !!!
+
 		ArrayList<Locks> lockedBy = locking.get(page);
-		
+		if (lockedBy == null)
+			return; // !!!
+
 		for (Locks l : lockedBy) {
 			TransactionId v = l.tid;
 			NodeInfo vInfo = graphInfo.get(v);
-			
+
 			if (vInfo == null) {
 				vInfo = new NodeInfo(tid);
 				graphInfo.put(tid, vInfo);
 			}
-			
+
 			if (vInfo.color == WHITE) {
 				vInfo.parent = tid;
 				graphInfo.put(v, vInfo);
 				recDFS(v);
 			}
 		}
-		
+
 		info.color = BLACK;
 		info.f = ++t;
 		graphInfo.put(tid, info);
 	}
-	
+
 	synchronized void DFS() {
 		for (TransactionId s : dpGraph.keySet()) {
-			if (graphInfo.get(s) == null || graphInfo.get(s).color==WHITE) {
+			if (graphInfo.get(s) == null || graphInfo.get(s).color == WHITE) {
 				recDFS(s);
 			}
 		}
 	}
-	
-	private synchronized boolean cycle(TransactionId tid) {		
+
+	private synchronized boolean cycle(TransactionId tid) {
 		NodeInfo info = graphInfo.get(tid);
 		PageId page = dpGraph.get(tid);
 		ArrayList<Locks> lockedBy = locking.get(page);
-				
+
+		if (lockedBy == null)
+			return false;
+
 		for (Locks v : lockedBy) {
 			NodeInfo vInfo = graphInfo.get(v.tid);
-			
-			if (vInfo.d <= info.f && info.d < info.f 
-					&& vInfo.d <= info.d && info.f <= vInfo.f ) {
+
+			if (vInfo.d <= info.f && info.d < info.f && vInfo.d <= info.d && info.f <= vInfo.f) {
 				return true;
 			}
 		}
-		
+
 		return false;
 	}
-	
+
 	private synchronized HashSet<TransactionId> detectCycle() {
-		HashSet<TransactionId> cycle = new HashSet<>();
 		DFS();
 		for (TransactionId u : dpGraph.keySet()) {
 			if (cycle(u)) {
+				HashSet<TransactionId> cycle = new HashSet<>();
+				TransactionId current = u;
 				do {
-					cycle.add(u);
-					cycle.add(graphInfo.get(u).parent);
-					u = graphInfo.get(u).parent;
- 				} while (graphInfo.get(u).parent != null && !graphInfo.get(u).parent.equals(u));
+					cycle.add(current);
+					current = graphInfo.get(current).parent;
+				} while (current != null && !current.equals(u));
 				graphInfo.clear();
+				// System.out.println("CYCLE: " + cycle);
 				return cycle;
 			}
 		}
@@ -364,7 +376,7 @@ public class KeyHolder {
 		return null;
 	}
 	
-	/**----TEST CODE---**/
+	//----------------TEST CODE------------------
 	public synchronized boolean deadlockOccurred(TransactionId tid, PageId pid) {//T1为tid，P3为pid
         List<Locks> holders = locking.get(pid);
         if (holders == null || holders.size() == 0) {
@@ -386,51 +398,45 @@ public class KeyHolder {
         return false;
     }
 	
-	 private synchronized List<PageId> getAllLocksByTid(TransactionId tid) {
-	        ArrayList<PageId> pids = new ArrayList<>();
-	        for (Map.Entry<PageId, ArrayList<Locks>> entry : locking.entrySet()) {
-	            for (Locks ls : entry.getValue()) {
-	                if (ls.tid.equals(tid)) {
-	                    pids.add(entry.getKey());
-	                }
-	            }
-	        }
-	        return pids;
-	    }
-	 
-	 private synchronized boolean isWaitingResources(TransactionId tid, List<PageId> pids, TransactionId toRemove) {
-	        PageId waitingPage = dpGraph.get(tid);
-	        System.out.println(waitingPage);
-	        
-	        if (waitingPage == null) {
-	            return false;
-	        }
-	        for (PageId pid : pids) {
-	            if (pid.equals(waitingPage)) {
-	                return true;
-	            }
-	        }
-	        //到达这里说明tid并不直接在等待pids中的任意一个，但有可能间接在等待
-	        //如果waitingPage的拥有者们(去掉toRemove)中的某一个正在等待pids中的某一个，说明是tid间接在等待
-	        List<Locks> holders = locking.get(waitingPage);
-	        
+	private synchronized List<PageId> getAllLocksByTid(TransactionId tid) {
+        ArrayList<PageId> pids = new ArrayList<>();
+        for (Map.Entry<PageId, ArrayList<Locks>> entry : locking.entrySet()) {
+            for (Locks ls : entry.getValue()) {
+                if (ls.tid.equals(tid)) {
+                    pids.add(entry.getKey());
+                }
+            }
+        }
+		return pids;
+	}
 
-	        for (Locks l : holders) {
-	        	System.out.print(l.tid + " ");
-	        }
-	        System.out.println();
-	        
-	        if (holders == null || holders.size() == 0) return false;//该资源没有拥有者
-	        for (Locks ls : holders) {
-	            TransactionId holder = ls.tid;
-	            if (!holder.equals(toRemove)) {//去掉toRemove，在toRemove刚好拥有waitingResource的读锁时就需要
-	                boolean isWaiting = isWaitingResources(holder, pids, toRemove);
-	                if (isWaiting) return true;
-	            }
-	        }
-	        //如果在for循环中没有return，说明每一个holder都不直接或间接等待pids
-	        //故tid也非间接等待pids
-	        return false;
-	    }
+	private synchronized boolean isWaitingResources(TransactionId tid, List<PageId> pids, TransactionId toRemove) {
+		PageId waitingPage = dpGraph.get(tid);
+		if (waitingPage == null) {
+			return false;
+		}
+		for (PageId pid : pids) {
+			if (pid.equals(waitingPage)) {
+				return true;
+			}
+		}
+		// 到达这里说明tid并不直接在等待pids中的任意一个，但有可能间接在等待
+		// 如果waitingPage的拥有者们(去掉toRemove)中的某一个正在等待pids中的某一个，说明是tid间接在等待
+		List<Locks> holders = locking.get(waitingPage);
+		if (holders == null || holders.size() == 0)
+			return false;// 该资源没有拥有者
+		for (Locks ls : holders) {
+			TransactionId holder = ls.tid;
+			if (!holder.equals(toRemove)) {// 去掉toRemove，在toRemove刚好拥有waitingResource的读锁时就需要
+				boolean isWaiting = isWaitingResources(holder, pids, toRemove);
+				if (isWaiting)
+					return true;
+			}
+		}
+		// 如果在for循环中没有return，说明每一个holder都不直接或间接等待pids
+		// 故tid也非间接等待pids
+		return false;
+	}
+
 
 }

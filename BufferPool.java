@@ -33,7 +33,7 @@ public class BufferPool {
 	 * the number of pages stored in the pool
 	 */
 	private final int numPages;
-	//private PageId recentPid;
+	private PageId recentPid;
 
 	Permissions S = Permissions.READ_ONLY;
 	Permissions X = Permissions.READ_WRITE;
@@ -52,11 +52,10 @@ public class BufferPool {
 		// some code goes here
 		this.numPages = numPages;
 		this.keyHolder = new KeyHolder();
-		
-		lockManager = new LockManager();
 	}
 
 	public static int getPageSize() {
+		// System.out.println("PageSize" + pageSize);
 		return pageSize;
 	}
 
@@ -84,53 +83,82 @@ public class BufferPool {
 	 * @param tid  the ID of the transaction requesting the page
 	 * @param pid  the ID of the requested page
 	 * @param perm the requested permissions on the page
+	 * @throws TransactionAbortedException 
+	 * @throws  
 	 * @throws InterruptedException
 	 */
-	
-	//锁管理器
-    private final LockManager lockManager;
-	public Page getPage(TransactionId tid, PageId pid, Permissions perm)
+	/*public Page getPage(TransactionId tid, PageId pid, Permissions perm)
 			throws TransactionAbortedException, DbException {
+		Page p = null;
+		try {
+			p = getPageHelper(tid, pid, perm);
+		} catch (TransactionAbortedException te) {
+			System.out.println("deadlock");
+		}
+		return p;
+	}*/
+	
+	public Page getPage(TransactionId tid, PageId pid, Permissions perm)
+			throws DbException, TransactionAbortedException {
 		// some code goes here
 		// block and acquire desired lock before returning a page
-		/*if (perm == S) System.out.println(tid + " tries to Slock on page " + pid);
-		if (perm == X) System.out.println(tid + " tries to Xlock on page " + pid);
-		 
-		try {
+		// if (perm == S) System.out.println(tid + " tries to Slock on page " + pid + "
+		// currently locked by " + keyHolder.locking.get(pid));
+		// if (perm == X) System.out.println(tid + " tries to Xlock on page " + pid + "
+		// currently locked by " + keyHolder.locking.get(pid));
+		
+		/*try { 
 			keyHolder.dpGraph.put(tid, pid);
 			keyHolder.lock(tid, pid, perm);
+		} catch (TransactionAbortedException tr) {
+			System.out.println("deadlock");
+			//try {
+			//	transactionComplete(tid);
+			//} catch (IOException e) {}
 		} catch (InterruptedException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
-		}
-		
-		if (perm == S) System.out.println(tid + " Slocks on page " + pid);
-		if (perm == X) System.out.println(tid + " Xlocks on page " + pid);
-		*/
-		//edit
-		// some code goes here
-        boolean result = (perm == Permissions.READ_ONLY) ? lockManager.grantSLock(tid, pid)
-                : lockManager.grantXLock(tid, pid);
-        //下面的while循环就是在模拟等待过程，隔一段时间就检查一次是否申请到锁了，还没申请到就检查是否陷入死锁
-        while (!result) {
-            if (lockManager.deadlockOccurred(tid, pid)) {
-            	System.out.println();
-            	System.out.println("DEADLOCK OCCURED");
-            	System.out.println();
-                throw new TransactionAbortedException();
-            }
-            try {
-				Thread.sleep(500);
+		}*/
+		 
+
+		// if (perm == S) System.out.println(tid + " Slocks on page " + pid + "
+		// currently locked by " + keyHolder.locking.get(pid));
+		// if (perm == X) System.out.println(tid + " Xlocks on page " + pid + "
+		// currently locked by " + keyHolder.locking.get(pid));
+
+		// edit
+		if (perm == S)
+			System.out.println(tid + " tries to Slock on page " + pid);
+		if (perm == X)
+			System.out.println(tid + " tries to Xlock on page " + pid);
+		System.out.println(keyHolder.locking);
+		// keyHolder.dpGraph.put(tid, pid);
+		boolean locked = (perm == S) ? keyHolder.SLock(tid, pid) : keyHolder.XLock(tid, pid);
+		// dpGraph.put(tid, pid);
+		while (!locked) {
+			// wait for a while
+			try {
+				Thread.sleep(1000);
 			} catch (InterruptedException e) {
 				// TODO Auto-generated catch block
 				e.printStackTrace();
 			}
-            //sleep之后再次判断result
-            result = (perm == Permissions.READ_ONLY) ? lockManager.grantSLock(tid, pid)
-                    : lockManager.grantXLock(tid, pid);
-        }
-		//done edit
-		
+			// try to lock again
+			locked = (perm == S) ? keyHolder.SLock(tid, pid) : keyHolder.XLock(tid, pid);
+			// deadlock check
+			if (keyHolder.handleDeadlock(tid, pid)) {
+			//if (keyHolder.deadlockOccurred(tid, pid)) {
+				System.out.println("--------" + tid + "-deadlock occured on page " + pid + "--------");
+				throw new TransactionAbortedException();
+			}
+		}
+		if (perm == S)
+			System.out.println(tid + " Slocks on page " + pid);
+		if (perm == X)
+			System.out.println(tid + " Xlocks on page " + pid);
+		System.out.println(keyHolder.locking);
+		// done edit
+
 		Page p = pages.get(pid);
 		// not in the buffer
 		if (p == null) {
@@ -143,7 +171,7 @@ public class BufferPool {
 			p = catalog.getDatabaseFile(tableID).readPage(pid);
 			pages.put(pid, p);
 		}
-		//recentPid = pid;
+		recentPid = pid;
 		return p;
 	}
 
@@ -191,22 +219,27 @@ public class BufferPool {
 			for (Map.Entry<PageId, Page> e : pages.entrySet()) {
 				Page p = e.getValue();
 				PageId pid = e.getKey();
-				if (holdsLock(tid, pid)) releasePage(tid, pid);
 				if (p.isDirty() != null && p.isDirty().equals(tid)) {
 					flushPage(pid);
 				}
+				while (holdsLock(tid, pid))
+					releasePage(tid, pid);
 			}
+			System.out.println("Transaction " + tid + " commited");
 		} else { // abort -> reread page from disk and release
 			for (Map.Entry<PageId, Page> e : pages.entrySet()) {
 				Page p = e.getValue();
 				PageId pid = e.getKey();
-				if (holdsLock(tid, pid)) releasePage(tid, pid);
 				if (p.isDirty() != null && p.isDirty().equals(tid)) {
-					DbFile f = Database.getCatalog().getDatabaseFile(pid.getTableId()); 
+					DbFile f = Database.getCatalog().getDatabaseFile(pid.getTableId());
 					e.setValue(f.readPage(pid));
 				}
+				while (holdsLock(tid, pid))
+					releasePage(tid, pid);
 			}
+			System.out.println("Transaction " + tid + " aborted");
 		}
+		System.out.println(tid + " COMPLETED");
 	}
 
 	/**
@@ -336,12 +369,34 @@ public class BufferPool {
 	/**
 	 * never evict a dirty page.
 	 */
+	/*
+	 * private synchronized void evictPage() throws DbException { // some code goes
+	 * here for (PageId pid : pages.keySet()) { if (pages.get(pid).isDirty() ==
+	 * null) { this.discardPage(pid); break; } } }
+	 */
+
 	private synchronized void evictPage() throws DbException {
 		// some code goes here
-		for (PageId pid : pages.keySet()) {
-			if (pages.get(pid).isDirty() == null) {
-				this.discardPage(pid);
-				break;
+		PageId toEvict = recentPid;
+		if (toEvict == null) {
+			for (PageId pid : pages.keySet()) {
+				if (pages.get(pid).isDirty() == null) {
+					// this.discardPage(pid);
+					toEvict = pid;
+					break;
+				}
+			}
+		} else {
+			Page page = pages.get(toEvict);
+			if (page != null) {
+				if (page.isDirty() == null) {
+					try {
+						this.flushPage(toEvict);
+					} catch (IOException e) {
+						e.printStackTrace();
+					}
+					this.discardPage(toEvict);
+				}
 			}
 		}
 	}

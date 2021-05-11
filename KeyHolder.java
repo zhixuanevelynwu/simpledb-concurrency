@@ -32,23 +32,6 @@ public class KeyHolder {
 		}
 	}
 
-	private static class NodeInfo {
-		int color;
-		TransactionId tid;
-		TransactionId parent;
-		int d;
-		int f;
-
-		NodeInfo(TransactionId tid) {
-			this.color = 0;
-			this.tid = tid;
-		}
-
-		public String toString() {
-			return "tid=" + tid + " parent=" + parent + " color=" + color + " d=" + d + " f=" + f;
-		}
-	}
-
 	// stores information the transactions that are accessing each page
 	// -> page pid is locked by which locks
 	public ConcurrentHashMap<PageId, ArrayList<Locks>> locking;
@@ -61,18 +44,6 @@ public class KeyHolder {
 		this.locking = new ConcurrentHashMap<>();
 		this.dpGraph = new ConcurrentHashMap<>();
 		this.graphInfo = new ConcurrentHashMap<>();
-	}
-
-	public void removeLocksBy(TransactionId tid) {
-		for (Map.Entry<PageId, ArrayList<Locks>> e : locking.entrySet()) {
-			ArrayList<Locks> locks = e.getValue();
-			for (Locks l : locks) {
-				if (l.tid.equals(tid)) {
-					unlock(tid, e.getKey());
-					break;
-				}
-			}
-		}
 	}
 
 	/**
@@ -123,7 +94,25 @@ public class KeyHolder {
 			}
 		}
 		return false;
+	}
+	
+	/**
+	 * release all locks by a transaction
+	 * @param tid
+	 */
+	public synchronized void releaseAllLocksBy(TransactionId tid) {
+		ArrayList<PageId> pids = new ArrayList<>();
+		for (Map.Entry<PageId, ArrayList<Locks>> entry : locking.entrySet()) {
+			for (Locks ls : entry.getValue()) {
+				if (ls.tid.equals(tid)) {
+					pids.add(entry.getKey());
+				}
+			}
+		}
 
+		for (PageId pid : pids) {
+			unlock(tid, pid);
+		}
 	}
 
 	/**
@@ -277,12 +266,40 @@ public class KeyHolder {
 
 		return false;
 	}
+	
+	/**
+	 * store each transaction as nodes in a dpgraph
+	 * helps to identify cycles(deadlocks) among the waiting transactions
+	 * 
+	 * @author xx
+	 *
+	 */
+	private static class NodeInfo {
+		int color;
+		TransactionId tid;
+		TransactionId parent;
+		int d;
+		int f;
+
+		NodeInfo(TransactionId tid) {
+			this.color = 0;
+			this.tid = tid;
+		}
+
+		public String toString() {
+			return "tid=" + tid + " parent=" + parent + " color=" + color + " d=" + d + " f=" + f;
+		}
+	}
 
 	final int WHITE = 0;
 	final int GRAY = 1;
 	final int BLACK = 2;
 	int t;
-
+	
+	/**
+	 * performs DFS on dpgraph
+	 * @param tid
+	 */
 	synchronized void recDFS(TransactionId tid) {
 		NodeInfo info = graphInfo.get(tid);
 
@@ -319,7 +336,10 @@ public class KeyHolder {
 		info.f = ++t;
 		graphInfo.put(tid, info);
 	}
-
+	
+	/**
+	 * performs full DFS on dpgraph
+	 */
 	synchronized void DFS() {
 		for (TransactionId s : dpGraph.keySet()) {
 			if (graphInfo.get(s) == null || graphInfo.get(s).color == WHITE) {
@@ -328,6 +348,12 @@ public class KeyHolder {
 		}
 	}
 
+	/**
+	 * identify the cause of the cycle
+	 * in the dpgraph, these are the transactions that cause the deadlock
+	 * @param tid
+	 * @return
+	 */
 	private synchronized boolean cycle(TransactionId tid) {
 		NodeInfo info = graphInfo.get(tid);
 		PageId page = dpGraph.get(tid);
@@ -346,7 +372,11 @@ public class KeyHolder {
 
 		return false;
 	}
-
+	
+	/**
+	 * constructs a cycle out of all the relevant transactions
+	 * @return
+	 */
 	private synchronized HashSet<TransactionId> detectCycle() {
 		DFS();
 		for (TransactionId u : dpGraph.keySet()) {
@@ -358,27 +388,11 @@ public class KeyHolder {
 					current = graphInfo.get(current).parent;
 				} while (current != null && !current.equals(u));
 				graphInfo.clear();
-				// System.out.println("CYCLE: " + cycle);
 				return cycle;
 			}
 		}
 		graphInfo.clear();
 		return null;
-	}
-
-	public synchronized void releaseTransactionLocks(TransactionId tid) {
-		ArrayList<PageId> pids = new ArrayList<>();
-		for (Map.Entry<PageId, ArrayList<Locks>> entry : locking.entrySet()) {
-			for (Locks ls : entry.getValue()) {
-				if (ls.tid.equals(tid)) {
-					pids.add(entry.getKey());
-				}
-			}
-		}
-
-		for (PageId pid : pids) {
-			unlock(tid, pid);
-		}
 	}
 
 }

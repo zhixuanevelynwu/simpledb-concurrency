@@ -39,9 +39,9 @@ public class BufferPool {
 	 */
 	private final ConcurrentHashMap<PageId, Page> pages;
 	/**
-	 * lru eviction policy
+	 * for eviction policy
 	 */
-	private final ConcurrentHashMap<PageId, Integer> recentlyUsed;
+	private final ArrayList<PageId> recentlyUsed;
 	/**
 	 * in charge of which transactions get to lock
 	 */
@@ -57,7 +57,7 @@ public class BufferPool {
 		this.pages = new ConcurrentHashMap<>();
 		this.numPages = numPages;
 		this.keyHolder = new KeyHolder();
-		this.recentlyUsed = new ConcurrentHashMap<>();
+		this.recentlyUsed = new ArrayList<>();
 	}
 
 	/**
@@ -83,7 +83,6 @@ public class BufferPool {
 		// some code goes here
 		boolean locked = (perm == S) ? keyHolder.SLock(tid, pid) : keyHolder.XLock(tid, pid);
 		while (!locked) {
-			// wait for a while
 			try {
 				Thread.sleep(1000);
 			} catch (InterruptedException e) {}
@@ -94,6 +93,8 @@ public class BufferPool {
 				throw new TransactionAbortedException();
 			}
 		}
+		
+		// lock granted, fetch the page for the transaction
 		Page p = pages.get(pid);
 		// not in the buffer
 		if (p == null) {
@@ -106,7 +107,7 @@ public class BufferPool {
 			p = catalog.getDatabaseFile(tableID).readPage(pid);
 			pages.put(pid, p);
 		}
-		recentlyUsed.put(pid, 0);
+		recentlyUsed.add(pid);
 		return p;
 
 	}
@@ -156,7 +157,6 @@ public class BufferPool {
 	public boolean holdsLock(TransactionId tid, PageId p) {
 		// some code goes here
 		// not necessary for proj1
-		// return lockManager.getLockState(tid, p) != null;
 		return keyHolder.exists(tid, p);
 	}
 
@@ -169,7 +169,7 @@ public class BufferPool {
 	 */
 	public synchronized void transactionComplete(TransactionId tid, boolean commit) throws IOException {
 		// some code goes here
-		keyHolder.releaseTransactionLocks(tid);
+		keyHolder.releaseAllLocksBy(tid);
 		if (commit) {
 			System.out.println("Transaction " + tid + " COMPLETED");
 			for (Map.Entry<PageId, Page> e : pages.entrySet()) {
@@ -213,9 +213,9 @@ public class BufferPool {
 		// some code goes here
 		// not necessary for proj1
 		HeapFile table = (HeapFile) Database.getCatalog().getDatabaseFile(tableId);
-		ArrayList<Page> affectedPages = table.insertTuple(tid, t);
-		for (Page page : affectedPages) {
-			page.markDirty(true, tid);
+		ArrayList<Page> ins = table.insertTuple(tid, t);
+		for (Page p : ins) {
+			p.markDirty(true, tid);
 		}
 	}
 
@@ -236,8 +236,8 @@ public class BufferPool {
 		// not necessary for proj1
 		int tableId = t.getRecordId().getPageId().getTableId();
 		HeapFile table = (HeapFile) Database.getCatalog().getDatabaseFile(tableId);
-		Page affectedPage = table.deleteTuple(tid, t);
-		affectedPage.markDirty(true, tid);
+		Page del = table.deleteTuple(tid, t);
+		del.markDirty(true, tid);
 	}
 
 	/**
@@ -264,6 +264,7 @@ public class BufferPool {
 		// some code goes here
 		// not necessary for lab1
 		this.pages.remove(pid);
+		this.recentlyUsed.remove(pid);
 	}
 
 	/**
@@ -299,39 +300,29 @@ public class BufferPool {
 	 */
 	private synchronized void evictPage() throws DbException {
 		// some code goes here
-		Page evictedPage;
-		int counter = -1;
-		PageId evictedPageId = null;
-		boolean isPageDirty = true;
-		int dirtyPageCount = 0;
-
+		// check if all pages are dirty
+		int dirtyCount = 0;
 		for (PageId key : pages.keySet()) {
 			if (pages.get(key).isDirty() != null) {
-				dirtyPageCount++;
+				dirtyCount++;
 			}
 		}
-		if (dirtyPageCount == numPages) {
-			throw new DbException("all pages in BufferPool are dirty.");
-		}
-		isPageDirty = true;
-		// Check to make sure that the page evicted is not a dirty page
-		for (PageId key : pages.keySet()) {
-			int value = recentlyUsed.get(key);
-			if (value > counter) {
-				counter = value;
-				evictedPageId = key;
-				evictedPage = pages.get(evictedPageId);
-				isPageDirty = ((HeapPage) evictedPage).isDirty() != null;
-				if (!isPageDirty) {
+		if (dirtyCount == numPages) throw new DbException("No more pages");
+			
+		//not the case, then find the recently used clean page
+		for (PageId pid : pages.keySet()) {
+			if (recentlyUsed.contains(pid)) {
+				PageId toEvictId = pid;
+				Page toEvict = pages.get(toEvictId);
+				if (toEvict.isDirty() == null) {
 					try {
-						flushPage(evictedPageId);
-						pages.remove(evictedPageId);
-						recentlyUsed.remove(evictedPageId);
-						break;
-
+						flushPage(toEvictId);
 					} catch (IOException e) {
 						e.printStackTrace();
 					}
+					pages.remove(toEvictId);
+					recentlyUsed.remove(toEvictId);
+					break;
 				}
 
 			}

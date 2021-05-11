@@ -812,7 +812,7 @@ public class BTreeFile implements DbFile {
 	 * many pages since parent pointers will need to be updated when an internal node merges.
 	 * @see #handleMinOccupancyPage(TransactionId, HashMap, BTreePage)
 	 */
-	public ArrayList<Page> deleteTuple(TransactionId tid, Tuple t) 
+	public Page deleteTuple(TransactionId tid, Tuple t) 
 			throws DbException, IOException, TransactionAbortedException {
 		HashMap<PageId, Page> dirtypages = new HashMap<PageId, Page>();
 
@@ -830,7 +830,8 @@ public class BTreeFile implements DbFile {
 
 		ArrayList<Page> dirtyPagesArr = new ArrayList<Page>();
 		dirtyPagesArr.addAll(dirtypages.values());
-		return dirtyPagesArr;
+		//return dirtyPagesArr;
+		return null;
 	}
 
 	/**

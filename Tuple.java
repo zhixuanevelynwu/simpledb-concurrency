@@ -72,8 +72,7 @@ public class Tuple implements Serializable {
     	
     	fields[i] = f;
     	
-	    System.out.println();
-    	System.out.println("Set field[" + i + "] to value " + ((IntField)f).getValue());    
+    	//System.out.println("Set field[" + i + "] to value " + ((IntField)f).getValue());    
     }
 
     /**

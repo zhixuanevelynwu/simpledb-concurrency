@@ -87,10 +87,7 @@ public class KeyHolder {
 	 */
 	public synchronized boolean lock(TransactionId tid, PageId pid, Permissions perm)
 			throws InterruptedException, TransactionAbortedException {
-		// System.out.println("Try to lock on Tramsaction#" + tid + " page " + pid);
-		// dpGraph.put(tid, pid);
 		boolean locked = (perm == S) ? SLock(tid, pid) : XLock(tid, pid);
-		// dpGraph.put(tid, pid);
 		while (!locked) {
 			// deadlock check
 			if (handleDeadlock(tid, pid)) {
@@ -119,7 +116,7 @@ public class KeyHolder {
 		// find the lock -> unlock
 		for (Locks l : lockedBy) {
 			if (l.tid.equals(tid)) {
-				System.out.println(tid + " released page " + pid);
+				//System.out.println(tid + " released page " + pid);
 				lockedBy.remove(l);
 				locking.put(pid, lockedBy);
 				return true;
@@ -271,15 +268,10 @@ public class KeyHolder {
 		// check each transaction t is waiting for
 		HashSet<TransactionId> cause = detectCycle();
 
-		System.out.println();
-		System.out.println("dpGraph: " + dpGraph);
-		System.out.println(tid + " waiting for: " + lockedBy + " caused by: " + cause);
-		System.out.println();
+		//System.out.println(tid + " waiting for: " + lockedBy + " caused by: " + cause);
 
-		// if (cause != null && cause.contains(tid)) {
 		if (cause != null && cause.contains(tid)) {
 			dpGraph.remove(tid);
-			//removeLocksBy(tid);
 			return true;
 		}
 
@@ -302,12 +294,10 @@ public class KeyHolder {
 		info.d = ++t;
 
 		PageId page = dpGraph.get(tid);
-		if (page == null)
-			return; // !!!
+		if (page == null) return; // !!!
 
 		ArrayList<Locks> lockedBy = locking.get(page);
-		if (lockedBy == null)
-			return; // !!!
+		if (lockedBy == null) return; // !!!
 
 		for (Locks l : lockedBy) {
 			TransactionId v = l.tid;
@@ -375,68 +365,20 @@ public class KeyHolder {
 		graphInfo.clear();
 		return null;
 	}
-	
-	//----------------TEST CODE------------------
-	public synchronized boolean deadlockOccurred(TransactionId tid, PageId pid) {//T1为tid，P3为pid
-        List<Locks> holders = locking.get(pid);
-        if (holders == null || holders.size() == 0) {
-            return false;
-        }
-        List<PageId> pids = getAllLocksByTid(tid);//找出T1拥有的所有资源，即只含有P1的list
-        for (Locks ls : holders) {
-            TransactionId holder = ls.tid;
-            //去掉T1，因为虽然上图没画出这种情况，但T1可能同时也在其他Page上有读锁，这会影响判断结果
-            if (!holder.equals(tid)) {
-                //判断T3(holder)是否直接或间接在等待P1(pids)
-                //由图可以看出T3在直接等待P2，而P2的拥有者T2在直接等待P1,即T3在间接等待P1
-                boolean isWaiting = isWaitingResources(holder, pids, tid);
-                if (isWaiting) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-	
-	private synchronized List<PageId> getAllLocksByTid(TransactionId tid) {
-        ArrayList<PageId> pids = new ArrayList<>();
-        for (Map.Entry<PageId, ArrayList<Locks>> entry : locking.entrySet()) {
-            for (Locks ls : entry.getValue()) {
-                if (ls.tid.equals(tid)) {
-                    pids.add(entry.getKey());
-                }
-            }
-        }
-		return pids;
-	}
 
-	private synchronized boolean isWaitingResources(TransactionId tid, List<PageId> pids, TransactionId toRemove) {
-		PageId waitingPage = dpGraph.get(tid);
-		if (waitingPage == null) {
-			return false;
+	public synchronized void releaseTransactionLocks(TransactionId tid) {
+		ArrayList<PageId> pids = new ArrayList<>();
+		for (Map.Entry<PageId, ArrayList<Locks>> entry : locking.entrySet()) {
+			for (Locks ls : entry.getValue()) {
+				if (ls.tid.equals(tid)) {
+					pids.add(entry.getKey());
+				}
+			}
 		}
+
 		for (PageId pid : pids) {
-			if (pid.equals(waitingPage)) {
-				return true;
-			}
+			unlock(tid, pid);
 		}
-		// 到达这里说明tid并不直接在等待pids中的任意一个，但有可能间接在等待
-		// 如果waitingPage的拥有者们(去掉toRemove)中的某一个正在等待pids中的某一个，说明是tid间接在等待
-		List<Locks> holders = locking.get(waitingPage);
-		if (holders == null || holders.size() == 0)
-			return false;// 该资源没有拥有者
-		for (Locks ls : holders) {
-			TransactionId holder = ls.tid;
-			if (!holder.equals(toRemove)) {// 去掉toRemove，在toRemove刚好拥有waitingResource的读锁时就需要
-				boolean isWaiting = isWaitingResources(holder, pids, toRemove);
-				if (isWaiting)
-					return true;
-			}
-		}
-		// 如果在for循环中没有return，说明每一个holder都不直接或间接等待pids
-		// 故tid也非间接等待pids
-		return false;
 	}
-
 
 }
